@@ -1,16 +1,21 @@
 package com.millicat;
 
-import static spark.Spark.get;
-
 import java.awt.image.BufferedImage;
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.net.URLConnection;
@@ -20,14 +25,18 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Vector;
 
 import javax.imageio.ImageIO;
 import javax.servlet.http.HttpServletResponse;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import cmu.arktweetnlp.RunTagger;
+import edu.stanford.nlp.util.Pair;
 import spark.Request;
 import spark.Response;
 import spark.Route;
@@ -40,10 +49,16 @@ import spark.Spark;
  */
 
 
-public class SimpleExample {
+public class Main {
+	
+	static RunTagger tagger = null;
+	static HashMap<String, String> nounTypeList;
+	static BufferedWriter unknown_list_writer;
+	static TrendSearch trendSearch;
 	
 	public static String makeJson(ArrayList<String> imagePathList) {
-		
+		if(imagePathList == null)
+			return null;
 		//String reuslt = "{\"images\":["jupiter/Júpiter.png","jupiter/jupiter.jpg","jupiter/opo9113a.jpg"]}"
 		String result = "{\"images\":[";
 		for(int i = 0; i < imagePathList.size(); i++) {
@@ -76,11 +91,64 @@ public class SimpleExample {
 		}
 	}
 	
-	public static ArrayList<String> getImage(String keyword) {
+	public static ArrayList<String> getImage(String sentence) {
+		System.out.println("Sentence -> " + sentence);
 		ArrayList<String> result = new ArrayList<>();
+		Vector<Pair<String, String> > tagInfo = null;
+		String lastWord = null;
 		
-		File dir = new File("image/" + keyword);
-
+		
+		//google trend search
+		/*lastWord = trendSearch.compareSentece(sentence);
+		if(lastWord != null) {
+			System.out.println("Keyword from Google Trend -> " + lastWord);
+		}*/
+		
+		if(lastWord == null) {
+			lastWord = "";
+			try {
+				tagInfo = tagger.getTaggingInformation(sentence);
+			} catch (ClassNotFoundException | IOException e2) {
+				e2.printStackTrace();
+			}
+		
+			for(int i = tagInfo.size() - 1; i >= 0; i--) {
+				String currentWord = tagInfo.get(i).first;
+				String currentType = tagInfo.get(i).second;
+				
+				if(currentType.equals("A") && lastWord.length() > 0) {
+					lastWord = currentWord + " " + lastWord;
+				} else if(currentType.equals("N") || currentType.equals("^")) {
+					if(lastWord.length() <= 0){
+						if(nounTypeList.containsKey(currentWord)) {
+							if(nounTypeList.get(currentWord).equals("A")) {
+								break;
+							}
+						} else {
+							writeUnknownNoun(currentWord);
+						}
+					}
+					
+					lastWord = currentWord + " " + lastWord;
+				} else {
+					break;
+				}
+			}
+			
+			for(int i = 0; i < tagInfo.size(); i++) {
+				System.out.println(tagInfo.get(i).first + ", " + tagInfo.get(i).second);
+			}
+			
+			System.out.println("lastword: " + lastWord);
+			if(lastWord.length() <= 0)
+				return null;
+			lastWord = lastWord.trim();
+			
+		}
+		//lastWord = sentence.substring(sentence.lastIndexOf(" ")+1);
+		
+		File dir = new File("image/" + lastWord);
+		
 		if(dir.exists()){ 
 			//String path="C:\";
 			File []fileList=dir.listFiles();
@@ -93,7 +161,7 @@ public class SimpleExample {
         final String bingUrlPattern = "https://api.datamarket.azure.com/Bing/Search/v1/Image?Query=%%27%s%%27&$format=JSON";
 
         try {
-	        final String query = URLEncoder.encode(keyword, Charset.defaultCharset().name());
+	        final String query = URLEncoder.encode(lastWord, Charset.defaultCharset().name());
 	        final String bingUrl = String.format(bingUrlPattern, query);
 	
 	        final String accountKeyEnc = Base64.getEncoder().encodeToString((accountKey + ":" + accountKey).getBytes());
@@ -115,12 +183,19 @@ public class SimpleExample {
 	            if(resultsLength > 3)
 	            	resultsLength = 3;
 	            
+	            String googleTrendImageUrl = trendSearch.isTrendStory(lastWord);
+	            if(googleTrendImageUrl != null) {
+	            	resultsLength--;
+	            	download(trendSearch.isTrendStory(lastWord), "image/" + lastWord + "/" + 2 + ".jpg");
+	            	result.add("image/" + lastWord + "/" + 2 + ".jpg");
+	            }
+	            	
 	            for (int i = 0; i < resultsLength; i++) {
 	                final JSONObject aResult = results.getJSONObject(i);
 	                final JSONObject thumbnail = aResult.getJSONObject("Thumbnail");
 	                //String title =  aResult.get("Title").toString().replace(" ", "");
-	                download(thumbnail.get("MediaUrl").toString(), "image/" + keyword + "/" + i + ".jpg");
-	                result.add("image/" + keyword + "/" + i + ".jpg");
+	                download(thumbnail.get("MediaUrl").toString(), "image/" + lastWord + "/" + i + ".jpg");
+	                result.add("image/" + lastWord + "/" + i + ".jpg");
 	                /*Spark.get("/test", new Route() {
 	    				@Override
 	    				public Object handle(Request request, Response response) throws Exception {
@@ -137,12 +212,85 @@ public class SimpleExample {
         return result;
 	}
 	
+	public static void writeUnknownNoun(String noun) {
+		try(PrintWriter out = new PrintWriter(new BufferedWriter(new FileWriter("unknown_noun_list.txt", true)))) {
+		    out.println(noun);
+		}catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	//C: concrete, A: abstract, U: unknown
+	public static void getNounList() {
+		nounTypeList = new HashMap<>();
+		trendSearch = new TrendSearch();
+		trendSearch.init();
+		BufferedReader in;
+		try {
+			String s;
+			
+			in = new BufferedReader(new FileReader("concrete_noun_list.txt"));
+			while ((s = in.readLine()) != null) {
+				nounTypeList.put(s.trim(), "C");
+			}
+			in.close();
+			
+			in = new BufferedReader(new FileReader("abstract_noun_list.txt"));
+			while ((s = in.readLine()) != null) {
+				nounTypeList.put(s.trim(), "A");
+			}
+
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	private static String readAll(Reader rd) throws IOException {
+		StringBuilder sb = new StringBuilder();
+		int cp;
+		while ((cp = rd.read()) != -1) {
+			sb.append((char) cp);
+		}
+		return sb.toString();
+	}
+
+	public static JSONObject readJsonFromUrl(String url) throws IOException, JSONException {
+		InputStream is = new URL(url).openStream();
+		try {
+			BufferedReader rd = new BufferedReader(new InputStreamReader(is, Charset.forName("UTF-8")));
+			String jsonText = readAll(rd);
+			JSONObject json = new JSONObject(jsonText);
+			return json;
+		} finally {
+			is.close();
+		}
+	}
+	
+	public static void webp(String imagePath) { 
+		
+	}
 	
     public static void main(String[] args) {
-		get("/hello", (req, res) -> "Hello World");
-		//getImage("apple");
-		
-		RunTagger tagger = null;
+    	String command = "webp/cwebp";
+    	try {
+	        Process child = Runtime.getRuntime().exec(command);
+	
+	        BufferedReader in = new BufferedReader(
+                    new InputStreamReader(child.getInputStream()));
+			String line = null;
+			while ((line = in.readLine()) != null) {
+			    System.out.println(line);
+			}    	
+    	} catch(Exception e) {
+    		e.printStackTrace();
+    	}
+    	
+    	
+    	
+    	getNounList();
+    	
 		try {
 			tagger = new RunTagger();
 		} catch (UnsupportedEncodingException e) {
@@ -206,31 +354,37 @@ public class SimpleExample {
 			}
         });
 		
+		/*Spark.get("/image/list/*", new Route() {
+			@Override
+			public Object handle(Request request, Response response) throws Exception {
+				String keyword = request.splat()[0];
+				String json = makeJson(getImage(keyword));
+				response.type("application/json");
+				response.header("Content-Length", Integer.toString(json.length()));
+				response.header("Connection", "keep-alive");
+				System.out.println("/image/list/" + keyword + " -> " + json);
+				return json;
+			}
+        });*/	
+		
 		Spark.get("/image/list/*", new Route() {
 			@Override
 			public Object handle(Request request, Response response) throws Exception {
-				String keyword = request.splat()[0];
-				String json = makeJson(getImage(keyword));
+				String sentence = request.splat()[0].trim();
+				String lastWord = sentence.substring(sentence.lastIndexOf(" ")+1);
+				
+				String json = makeJson(getImage(sentence.trim()));
 				response.type("application/json");
-				response.header("Content-Length", Integer.toString(json.length()));
+				if(json == null)
+					json = "{\"images\":[]}";
+				String length = Integer.toString(json.length());
+				response.header("Content-Length", length);
 				response.header("Connection", "keep-alive");
-				System.out.println("/image/list/" + keyword + " -> " + json);
-				return json;
-			}
-        });	
-		
-		Spark.post("/chat/*", new Route() {
-			@Override
-			public Object handle(Request request, Response response) throws Exception {
-				String keyword = request.splat()[0];
-				String json = makeJson(getImage(keyword));
-				response.type("application/json");
-				response.header("Content-Length", Integer.toString(json.length()));
-				response.header("Connection", "keep-alive");
-				System.out.println("/image/list/" + keyword + " -> " + json);
+				System.out.println("/image/list/" + lastWord + " -> " + json);
 				return json;
 			}
         });
+	
     }
     
 }

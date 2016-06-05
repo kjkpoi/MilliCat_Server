@@ -1,13 +1,13 @@
 package cmu.arktweetnlp;
 
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.LineNumberReader;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Vector;
 
 import cmu.arktweetnlp.impl.ModelSentence;
 import cmu.arktweetnlp.impl.Sentence;
@@ -15,6 +15,7 @@ import cmu.arktweetnlp.impl.features.WordClusterPaths;
 import cmu.arktweetnlp.io.CoNLLReader;
 import cmu.arktweetnlp.io.JsonTweetReader;
 import cmu.arktweetnlp.util.BasicFileIO;
+import edu.stanford.nlp.util.Pair;
 import edu.stanford.nlp.util.StringUtils;
 
 /**
@@ -89,79 +90,64 @@ public class RunTagger {
 
 	}
 	
-	public void getTaggingInformation(String line) throws IOException, ClassNotFoundException {
+	public Vector<Pair<String, String> > getTaggingInformation(String line) throws IOException, ClassNotFoundException {
 		
-		long currenttime = System.currentTimeMillis();
-		int numtoks = 0;
+		String[] parts = line.split("\t");
+		String tweetData = parts[inputField-1];
 		
-			String[] parts = line.split("\t");
-			String tweetData = parts[inputField-1];
-			
-			
-			String text;
-			text = tweetData;
-			
-			Sentence sentence = new Sentence();
-			
-			sentence.tokens = Twokenize.tokenizeRawTweetText(text);
-			ModelSentence modelSentence = null;
+		
+		String text;
+		text = tweetData;
+		
+		Sentence sentence = new Sentence();
+		
+		sentence.tokens = Twokenize.tokenizeRawTweetText(text);
+		ModelSentence modelSentence = null;
 
-			if (sentence.T() > 0 && !justTokenize) {
-				modelSentence = new ModelSentence(sentence.T());
-				tagger.featureExtractor.computeFeatures(sentence, modelSentence);
-				goDecode(modelSentence);
-			}
-				
-			if (outputFormat.equals("conll")) {
-				outputJustTagging(sentence, modelSentence);
-			} else {
-				outputPrependedTagging(sentence, modelSentence, justTokenize, line);				
-			}
-			numtoks += sentence.T();
-		
-			
-			long finishtime = System.currentTimeMillis();
-			System.err.printf("Tokenized%s (%d tokens) in %.1f seconds:  %.1f tokens/sec\n",
-					justTokenize ? "" : " and tagged", 
-					numtoks, (finishtime-currenttime)/1000.0,
-					numtoks / ((finishtime-currenttime)/1000.0)
-			);
+		if (sentence.T() > 0 && !justTokenize) {
+			modelSentence = new ModelSentence(sentence.T());
+			tagger.featureExtractor.computeFeatures(sentence, modelSentence);
+			goDecode(modelSentence);
+		}
+		return getTaggingList(sentence, modelSentence);
 	}
 	
-	public void isLastwordNoun(String line) throws IOException, ClassNotFoundException {
+	public String isLastwordNoun(String line) throws IOException, ClassNotFoundException {
 		
 		long currenttime = System.currentTimeMillis();
 		int numtoks = 0;
 		
-			String[] parts = line.split("\t");
-			String tweetData = parts[inputField-1];
-			
-			
-			String text;
-			text = tweetData;
-			
-			Sentence sentence = new Sentence();
-			
-			sentence.tokens = Twokenize.tokenizeRawTweetText(text);
-			ModelSentence modelSentence = null;
+		String[] parts = line.split("\t");
+		String tweetData = parts[inputField-1];
+		
+		
+		String text;
+		text = tweetData;
+		
+		Sentence sentence = new Sentence();
+		
+		sentence.tokens = Twokenize.tokenizeRawTweetText(text);
+		ModelSentence modelSentence = null;
 
-			if (sentence.T() > 0 && !justTokenize) {
-				modelSentence = new ModelSentence(sentence.T());
-				tagger.featureExtractor.computeFeatures(sentence, modelSentence);
-				goDecode(modelSentence);
-			}
+		if (sentence.T() > 0 && !justTokenize) {
+			modelSentence = new ModelSentence(sentence.T());
+			tagger.featureExtractor.computeFeatures(sentence, modelSentence);
+			goDecode(modelSentence);
+		}
+		
+		String tag = tagger.model.labelVocab.name(modelSentence.labels[sentence.T() - 1]);
+		
+		System.out.println("Tag: " + tag);
 			
-			String tag = tagger.model.labelVocab.name(modelSentence.labels[sentence.T() - 1]);
-			
-			System.out.println("Tag: " + tag);
-				
-			numtoks += sentence.T();
-			long finishtime = System.currentTimeMillis();
-			System.err.printf("Tokenized%s (%d tokens) in %.1f seconds:  %.1f tokens/sec\n",
-					justTokenize ? "" : " and tagged", 
-					numtoks, (finishtime-currenttime)/1000.0,
-					numtoks / ((finishtime-currenttime)/1000.0)
-			);
+		numtoks += sentence.T();
+		long finishtime = System.currentTimeMillis();
+		System.err.printf("Tokenized%s (%d tokens) in %.1f seconds:  %.1f tokens/sec\n",
+				justTokenize ? "" : " and tagged", 
+				numtoks, (finishtime-currenttime)/1000.0,
+				numtoks / ((finishtime-currenttime)/1000.0)
+		);
+		
+		return tag;
 	}
 	
 	public void runTagger() throws IOException, ClassNotFoundException {
@@ -315,8 +301,7 @@ public class RunTagger {
 	 * assume mSent's labels hold the tagging.
 	 */
 	public void outputJustTagging(Sentence lSent, ModelSentence mSent) {
-		// mSent might be null!
-
+		// mSent might be null!		
 		if (outputFormat.equals("conll")) {
 			for (int t=0; t < lSent.T(); t++) {
 				outputStream.printf("%s\t%s", 
@@ -332,6 +317,14 @@ public class RunTagger {
 		else {
 			die("bad output format for just tagging: " + outputFormat);
 		}
+	}
+	
+	public Vector< Pair<String, String> > getTaggingList(Sentence lSent, ModelSentence mSent) {
+		Vector< Pair<String, String> > tagList = new Vector<>();
+		for (int t=0; t < lSent.T(); t++) 
+			tagList.add(new Pair<String, String>(lSent.tokens.get(t), tagger.model.labelVocab.name(mSent.labels[t])));
+		
+		return tagList;
 	}
 	/**
 	 * assume mSent's labels hold the tagging.
